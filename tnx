@@ -1,0 +1,216 @@
+import pandas as pd
+import numpy as np
+
+# --- تنظیمات و پارامترها ---
+FILE_PATH = '...'
+OUTPUT_EXCEL_FILE = 'crypto_analysis_report_formatted.xlsx' # نام فایل خروجی را تغییر دادم
+TARGET_ADDRESS = '...' # <<< این رو به آدرس کیف پول خودتون تغییر بدید
+TOKEN_AMOUNT_THRESHOLD = 100 
+TRANSFER_COUNT_THRESHOLD = 4 
+
+# --- تابع برای خواندن و پیش‌پردازش داده‌ها (همانند قبل) ---
+def load_and_preprocess_data(file_path):
+    """
+    فایل CSV تراکنش‌ها را می‌خواند و داده‌ها را برای تحلیل آماده می‌کند.
+    """
+    try:
+        df = pd.read_csv(file_path)
+        print("فایل CSV با موفقیت خوانده شد.")
+        print("ستون‌های موجود در فایل:", df.columns.tolist())
+
+        required_columns = ['Time (UTC)', 'From', 'To', 'Token', 'Amount']
+        if not all(col in df.columns for col in required_columns):
+            missing = [col for col in required_columns if col not in df.columns]
+            print(f"خطا: ستون‌های ضروری زیر در فایل یافت نشدند: {missing}")
+            print("لطفاً مطمئن شوید نام ستون‌ها با فایل شما مطابقت دارد.")
+            return None
+        
+        df['Time (UTC)'] = pd.to_datetime(df['Time (UTC)'], errors='coerce')
+        df.dropna(subset=['Time (UTC)'], inplace=True) 
+
+        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
+        df.dropna(subset=['Amount'], inplace=True) 
+        
+        return df
+
+    except FileNotFoundError:
+        print(f"خطا: فایل '{file_path}' یافت نشد. لطفاً مسیر فایل را بررسی کنید.")
+        return None
+    except Exception as e:
+        print(f"خطایی در خواندن یا پیش‌پردازش فایل رخ داد: {e}")
+        return None
+
+# --- تابع 1: محاسبه موجودی (دارایی) یک آدرس (همانند قبل) ---
+def calculate_address_balance(df, target_address):
+    print(f"\nدر حال محاسبه موجودی برای آدرس: {target_address}...")
+    
+    received_txs = df[df['To'] == target_address]
+    total_received = received_txs.groupby('Token')['Amount'].sum().reset_index()
+    total_received.rename(columns={'Amount': 'Received_Amount'}, inplace=True)
+
+    sent_txs = df[df['From'] == target_address]
+    total_sent = sent_txs.groupby('Token')['Amount'].sum().reset_index()
+    total_sent.rename(columns={'Amount': 'Sent_Amount'}, inplace=True)
+
+    balance_df = pd.merge(total_received, total_sent, on='Token', how='outer').fillna(0)
+    
+    balance_df['Balance'] = balance_df['Received_Amount'] - balance_df['Sent_Amount']
+
+    balance_df = balance_df[['Token', 'Balance', 'Received_Amount', 'Sent_Amount']]
+    balance_df.columns = ['توکن', 'موجودی', 'مقدار_دریافتی', 'مقدار_ارسالی']
+    
+    print("موجودی محاسبه شد.")
+    return balance_df
+
+# --- تابع 2: شناسایی تراکنش‌های با مقدار توکن بالا (همانند قبل) ---
+def find_large_token_transactions(df, threshold):
+    print(f"\nدر حال شناسایی تراکنش‌های با مقدار توکن بالای {threshold} واحد...")
+    large_txs = df[df['Amount'] >= threshold].copy()
+    
+    if large_txs.empty:
+        print("تراکنش با مقدار توکن بالاتر از آستانه یافت نشد.")
+    else:
+        print(f"{len(large_txs)} تراکنش با مقدار توکن بالای {threshold} یافت شد.")
+    
+    large_txs_output = large_txs[['Time (UTC)', 'From', 'To', 'Token', 'Amount', 'Txn Hash']].copy()
+    large_txs_output.columns = ['تاریخ_زمان', 'از_آدرس', 'به_آدرس', 'توکن', 'مقدار', 'هش_تراکنش']
+    
+    return large_txs_output
+
+# --- تابع 3: شناسایی آدرس‌های با بیش از 4 انتقال (همانند قبل) ---
+def find_active_addresses(df, threshold):
+    print(f"\nدر حال شناسایی آدرس‌های با بیش از {threshold} انتقال...")
+    
+    all_addresses = pd.concat([df['From'], df['To']]).dropna().reset_index(drop=True)
+    address_counts = all_addresses.value_counts().reset_index()
+    address_counts.columns = ['Address', 'Transaction_Count']
+    
+    active_addresses = address_counts[address_counts['Transaction_Count'] > threshold].copy()
+
+    if active_addresses.empty:
+        print("آدرسی با تعداد انتقال بالاتر از آستانه یافت نشد.")
+    else:
+        print(f"{len(active_addresses)} آدرس با بیش از {threshold} انتقال یافت شد.")
+        
+    active_addresses.columns = ['آدرس', 'تعداد_تراکنش‌ها']
+
+    return active_addresses
+
+# --- تابع جدید برای اعمال فرمت‌بندی روی فایل اکسل ---
+def apply_excel_formatting(writer, df_name_map):
+    """
+    فرمت‌بندی‌های ظاهری را روی فایل اکسل اعمال می‌کند.
+    df_name_map: دیکشنری از نام شیت‌ها و DataFrame مربوطه.
+    """
+    workbook = writer.book
+    
+    # فرمت برای هدر ستون‌ها
+    header_format = workbook.add_format({
+        'bold': True,
+        'bg_color': '#D9E1F2', # یک آبی کمرنگ زیبا
+        'font_color': '#333333',
+        'align': 'center',
+        'valign': 'vcenter',
+        'border': 1
+    })
+
+    # فرمت برای سلول‌های عادی
+    cell_format = workbook.add_format({
+        'align': 'center',
+        'valign': 'vcenter',
+        'border': 1
+    })
+
+    # فرمت برای ستون‌های متنی (چپ‌چین)
+    text_format = workbook.add_format({
+        'align': 'left',
+        'valign': 'vcenter',
+        'border': 1
+    })
+    
+    for sheet_name, df_data in df_name_map.items():
+        if df_data is None or df_data.empty: # اگر DataFrame خالی بود، فرمت اعمال نمی‌کنیم
+            continue
+
+        worksheet = writer.sheets[sheet_name]
+        
+        # فریز کردن پنل (ردیف اول)
+        worksheet.freeze_panes(1, 0) # Freeze the first row
+
+        # نوشتن هدرها با فرمت
+        for col_num, value in enumerate(df_data.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+
+        # نوشتن داده‌ها با فرمت مناسب
+        for row_num, row_data in enumerate(df_data.values):
+            for col_num, cell_value in enumerate(row_data):
+                # تشخیص نوع ستون برای اعمال فرمت مناسب
+                column_name = df_data.columns[col_num]
+                if column_name in ['آدرس', 'از_آدرس', 'به_آدرس', 'هش_تراکنش']:
+                    worksheet.write(row_num + 1, col_num, cell_value, text_format)
+                else:
+                    worksheet.write(row_num + 1, col_num, cell_value, cell_format)
+
+
+        # تنظیم خودکار عرض ستون‌ها
+        for i, col in enumerate(df_data.columns):
+            # محاسبه حداکثر طول محتوای ستون
+            max_len = max(df_data[col].astype(str).map(len).max(), len(col)) + 2 # +2 برای margin
+            if max_len > 50: # برای جلوگیری از عرض بیش از حد زیاد
+                max_len = 50
+            elif max_len < 10: # حداقل عرض
+                max_len = 10
+            worksheet.set_column(i, i, max_len)
+
+# --- تابع اصلی برای اجرای تحلیل و ذخیره در اکسل ---
+def main_analysis():
+    df = load_and_preprocess_data(FILE_PATH)
+    if df is None:
+        return 
+
+    # دیکشنری برای نگهداری DataFrameها و نام شیت‌های آن‌ها
+    df_name_map = {}
+
+    # ایجاد یک ExcelWriter برای ذخیره چندین شیت در یک فایل
+    # استفاده از engine='xlsxwriter' برای کنترل بهتر فرمت‌بندی
+    with pd.ExcelWriter(OUTPUT_EXCEL_FILE, engine='xlsxwriter') as writer:
+        # تحلیل 1: موجودی آدرس
+        balance_df = pd.DataFrame() # مقدار اولیه
+        if TARGET_ADDRESS != 'YOUR_WALLET_ADDRESS_HERE' and TARGET_ADDRESS != '':
+            balance_df = calculate_address_balance(df, TARGET_ADDRESS)
+            if not balance_df.empty:
+                balance_df.to_excel(writer, sheet_name='موجودی_آدرس', index=False, startrow=0, startcol=0)
+                df_name_map['موجودی_آدرس'] = balance_df
+                print(f"موجودی آدرس '{TARGET_ADDRESS}' در شیت 'موجودی_آدرس' ذخیره شد.")
+            else:
+                print(f"هیچ تراکنشی برای آدرس '{TARGET_ADDRESS}' یافت نشد، شیت موجودی ایجاد نمی‌شود.")
+        else:
+            print("لطفاً متغیر 'TARGET_ADDRESS' را در ابتدای کد وارد کنید تا موجودی آدرس محاسبه شود.")
+
+        # تحلیل 2: تراکنش‌های با مقدار توکن بالا
+        large_txs_df = find_large_token_transactions(df, TOKEN_AMOUNT_THRESHOLD)
+        if not large_txs_df.empty:
+            large_txs_df.to_excel(writer, sheet_name='تراکنش‌های_بزرگ', index=False, startrow=0, startcol=0)
+            df_name_map['تراکنش‌های_بزرگ'] = large_txs_df
+            print(f"تراکنش‌های با مقدار توکن بالای {TOKEN_AMOUNT_THRESHOLD} در شیت 'تراکنش‌های_بزرگ' ذخیره شد.")
+        else:
+            print("هیچ تراکنش بزرگی یافت نشد، شیت تراکنش‌های بزرگ ایجاد نمی‌شود.")
+
+        # تحلیل 3: آدرس‌های با فعالیت بالا
+        active_addresses_df = find_active_addresses(df, TRANSFER_COUNT_THRESHOLD)
+        if not active_addresses_df.empty:
+            active_addresses_df.to_excel(writer, sheet_name='آدرس‌های_پرفعالیت', index=False, startrow=0, startcol=0)
+            df_name_map['آدرس‌های_پرفعالیت'] = active_addresses_df
+            print(f"آدرس‌های با بیش از {TRANSFER_COUNT_THRESHOLD} انتقال در شیت 'آدرس‌های_پرفعالیت' ذخیره شد.")
+        else:
+            print("هیچ آدرس پرفعالیتی یافت نشد، شیت آدرس‌های پرفعالیت ایجاد نمی‌شود.")
+        
+        # اعمال فرمت‌بندی بعد از نوشتن تمام DataFrameها
+        apply_excel_formatting(writer, df_name_map)
+
+    print(f"\nگزارش تحلیل در فایل اکسل '{OUTPUT_EXCEL_FILE}' با موفقیت ذخیره شد.")
+    print("عملیات به پایان رسید.")
+
+# --- اجرای تابع اصلی ---
+if __name__ == "__main__":
+    main_analysis()
